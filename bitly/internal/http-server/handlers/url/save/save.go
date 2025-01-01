@@ -2,6 +2,7 @@ package save
 
 import (
 	"errors"
+	"io"
 	"net/http"
 
 	"github.com/go-chi/chi/v5/middleware"
@@ -20,14 +21,15 @@ type Request struct {
 }
 
 type Response struct {
-	Response resp.Response `json:"response"`
-	Alias    string        `json:"alias,omitempty"`
+	resp.Response
+	Alias string `json:"alias,omitempty"`
 }
 
 const aliasLength = 7
 
+//go:generate go run github.com/vektra/mockery/v2@v2.28.2 --name=URLSaver
 type URLSaver interface {
-	SaveURL(string, string) (int64, error)
+	SaveURL(urlToSave string, alias string) (int64, error)
 }
 
 func New(log *slog.Logger, bf *bloomfilter.BloomFilter, urlSaver URLSaver) http.HandlerFunc {
@@ -42,6 +44,14 @@ func New(log *slog.Logger, bf *bloomfilter.BloomFilter, urlSaver URLSaver) http.
 		var req Request
 
 		err := render.DecodeJSON(r.Body, &req)
+		if errors.Is(err, io.EOF) {
+			log.Error("empty request body")
+
+			render.JSON(w, r, resp.Error("empty request body"))
+
+			return
+		}
+
 		if err != nil {
 			log.Error("failed to decode the request", sl.Err(err))
 
@@ -50,7 +60,7 @@ func New(log *slog.Logger, bf *bloomfilter.BloomFilter, urlSaver URLSaver) http.
 			return
 		}
 
-		log.Info("request has been decoded", slog.Any("request", req))
+		// log.Info("request has been decoded", slog.Any("request", req))
 
 		if err := validator.New().Struct(req); err != nil {
 			validateErr := err.(validator.ValidationErrors)
@@ -64,7 +74,7 @@ func New(log *slog.Logger, bf *bloomfilter.BloomFilter, urlSaver URLSaver) http.
 
 		alias := hasher.GenerateAlias(aliasLength, req.URL, bf)
 
-		id, err := urlSaver.SaveURL(alias, req.URL)
+		id, err := urlSaver.SaveURL(req.URL, alias)
 		if errors.Is(err, storage.ErrorURLExists) {
 			log.Info("url already exists", slog.String("url", req.URL))
 
@@ -86,7 +96,7 @@ func New(log *slog.Logger, bf *bloomfilter.BloomFilter, urlSaver URLSaver) http.
 		}
 
 		bf.Add([]byte(alias))
-		log.Info("URL has been saved", slog.String("alias", alias), slog.Int64("id", id))
+		log.Info("URL has been saved", id)
 
 		render.JSON(w, r, Response{
 			Response: resp.OK(),

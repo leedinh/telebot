@@ -1,12 +1,15 @@
 package main
 
 import (
+	"net/http"
 	"os"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	config "github.com/leedinh/telebot/bitly/internal/config/url-shortener"
+	"github.com/leedinh/telebot/bitly/internal/http-server/handlers/url/save"
 	mwLogger "github.com/leedinh/telebot/bitly/internal/http-server/middleware/logger"
+	"github.com/leedinh/telebot/bitly/internal/lib/bloomfilter"
 	"github.com/leedinh/telebot/bitly/internal/lib/logger/handlers/slogpretty"
 	"github.com/leedinh/telebot/bitly/internal/lib/logger/sl"
 	"github.com/leedinh/telebot/bitly/internal/storage/sqlite"
@@ -32,6 +35,8 @@ func main() {
 	log.Info("Storage has been created")
 	_ = storage
 
+	bf := bloomfilter.NewBloomFilter(10000000, 5)
+
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID)
 	router.Use(middleware.RealIP)
@@ -39,6 +44,22 @@ func main() {
 	router.Use(mwLogger.New(log))
 	router.Use(middleware.Recoverer)
 	router.Use(middleware.URLFormat)
+
+	router.Post("/url", save.New(log, bf, storage))
+
+	log.Info("starting http server", slog.String("port", cfg.Address))
+	srv := &http.Server{
+		Addr:         cfg.Address,
+		Handler:      router,
+		ReadTimeout:  cfg.TimeOut,
+		WriteTimeout: cfg.TimeOut,
+		IdleTimeout:  cfg.IdleTimeOut,
+	}
+
+	if err := srv.ListenAndServe(); err != nil {
+		log.Error("http server failed", sl.Err(err))
+		os.Exit(0)
+	}
 
 }
 
